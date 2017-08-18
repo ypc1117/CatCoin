@@ -1,4 +1,4 @@
-import asyncio,os,json,time
+import os,json,time
 import logging
 
 logging.basicConfig(level=logging.INFO)
@@ -33,7 +33,7 @@ def base_encode(v, base):
         chars = __b58chars
     elif base == 43:
         chars = __b43chars
-    long_value = 0L
+    long_value = 0
     for (i, c) in enumerate(v[::-1]):
         long_value += (256**i) * ord(c)
     result = ''
@@ -54,12 +54,12 @@ def EncodeBase58Check(vchIn):
     hash = Hash(vchIn)
     return base_encode(vchIn + hash[0:4], base=58)
 
-async def point_to_ser(P, comp=True ):
+def point_to_ser(P, comp=True ):
     if comp:
         return ( ('%02x'%(2+(P.y()&1)))+('%064x'%P.x()) ).decode('hex')
     return ( '04'+('%064x'%P.x())+('%064x'%P.y()) ).decode('hex')
 
-async def ECC_YfromX(x,curved=curve_secp256k1, odd=True):
+def ECC_YfromX(x,curved=curve_secp256k1, odd=True):
     _p = curved.p()
     _a = curved.a()
     _b = curved.b()
@@ -74,7 +74,7 @@ async def ECC_YfromX(x,curved=curve_secp256k1, odd=True):
             return [_p-My,offset]
     raise Exception('ECC_YfromX: No Y found')
 
-async def ser_to_point(Aser):
+def ser_to_point(Aser):
     curve = curve_secp256k1
     generator = generator_secp256k1
     _r  = generator.order()
@@ -84,7 +84,7 @@ async def ser_to_point(Aser):
     Mx = string_to_number(Aser[1:])
     return Point( curve, Mx, ECC_YfromX(Mx, curve, Aser[0]=='\x03')[0], _r )   
 
-async def generate_keypairs():    
+def generate_keypairs():    
     randrange = SystemRandom().randrange
     g = generator_secp256k1
     n = g.order()
@@ -94,18 +94,18 @@ async def generate_keypairs():
     xpub = point_to_ser(pubkey.point,True).encode('hex')
     return privkey,xpub
 
-async def generate_sin(xpub):    
+def generate_sin(xpub):    
     h = hashlib.new('ripemd160')
     h.update(hashlib.sha256(xpub).hexdigest())
     h1 =  "0f02"+h.hexdigest()
-    print h1
+    print(h1)
     checksumTotal =  hashlib.sha256(hashlib.sha256(h1).hexdigest()).hexdigest()
     checksum = checksumTotal[0:4]
     sin =  base_encode(h1+checksum,base=58)
     return sin
 
     
-async def generate_signature(privkey,url):
+def generate_signature(privkey,url):
     randrange = SystemRandom().randrange
     g = generator_secp256k1
     n = g.order()
@@ -114,31 +114,74 @@ async def generate_signature(privkey,url):
 
     return signature
 
-async def generate_verfication(xpub,url,signature):
+def generate_verfication(xpub,url,signature):
 
     g = generator_secp256k1
     pubkey = Public_key(g,ser_to_point(xpub.decode('hex')))
     return pubkey.verifies(int(url.encode('hex'),16),signature)
 
-async def login(request):
-    xpub = request['pubkey']
-    secret = request['secky']
-    signature = generate_signature(privkey,url)
-    header = {
-        'x-identity': xpub,
-        'x-signature': (signature.r,signature.s)
-    }
+def login(xpub):
+    sin = generate_sin(xpub)
+    try:
+        if sin in database:
+            logger.info("Login Successfully")
+        else:
+            logger.info("Error")
+    except Exception as ex:
+        logger.error(traceback.print_exc())
+                     
 
-    request = urllib2.request(url)
 
 
-async def index(request):
+def handle_login(request):
+    try:
+        params = await request.json()
+        xpub = params['xpub']
+        return web.Response(text=json.dumps(await login(xpub)))
+
+    except Exception as ex:
+        logger.error(traceback.print_exc())
+        return web.Response(text=json.dumps({
+            'status': 'failture',
+            'errmsg': '服务器未知错误'
+        }))
+
+def register(username):
+    privkey,xpub = generate_keypairs()
+
+    x_signature = generate_signature(privkey,url)
+    signature = Signature(x_signature.r,x_signature.s)  
+    if generate_verfication(xpub,url,signature):
+        sin = generate_sin(xpub)
+            ##insert into database
+    else:
+        print("INVAILD SIGNATURE")                 
+
+
+
+def handle_register(request):
+    try:
+        params = await request.json()
+        username = params['username']
+        return web.Response(text=json.dumps(await register(username)))
+
+    except Exception as ex:
+        logger.error(traceback.print_exc())
+        return web.Response(text=json.dumps({
+            'status': 'failture',
+            'errmsg': '服务器未知错误'
+        }))
+
+
+
+def index(request):
     return web.Response(body=open("login.html","rb").read(),content_type='text/html',charset='UTF-8')
 
-async def init(loop):
+def init(loop):
     app = web.Application(loop=loop)
     app.router.add_route('GET','/',index)
-    app.router.add_route('GET','/login/',login)
+    app.router.add_route('POST','/register/',handle_register)
+    app.router.add_route('POST','/login/',handle_login)
     srv = await loop.create_server(app.make_handler(),'127.0.0.1',9000)
     logging.info('server started at http://127.0.0.1:9000...')
     return srv
